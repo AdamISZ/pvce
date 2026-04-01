@@ -1,0 +1,289 @@
+================================================================================
+PVCE: PEDERSEN VECTOR COMMITMENT WITNESS ENCRYPTION
+Protocol Specification — Bitcoin Signet Settlement
+================================================================================
+
+OVERVIEW
+--------
+A two-party protocol. The Prover holds a secret witness vector and its
+commitment blinding. The Verifier holds only the commitment. The Verifier
+encrypts a Bitcoin private key to the commitment such that only the Prover —
+by virtue of knowing the commitment opening — can recover it and spend the
+associated on-chain output.
+
+PARTICIPANTS
+------------
+  P  (Prover)    Knows: witness (c_1,...,c_n) and blinding scalar r.
+                 Wants: to recover the Bitcoin private key and spend the output.
+
+  V  (Verifier)  Knows: commitment C.
+                 Wants: to lock funds such that only a valid opener can spend.
+
+CRYPTOGRAPHIC SETTING
+---------------------
+Curve:    secp256k1, order p, standard generator G (the Bitcoin generator).
+
+Generators for Pedersen commitment — independent of G, generated once via
+deterministic hash-to-curve from fixed public strings:
+
+    G_i  =  hash_to_curve( "PVCE_G_" || i )    for i = 1, ..., n
+    H    =  hash_to_curve( "PVCE_H" )
+
+Independence assumption: no party knows any discrete-log relation among
+G, G_1, ..., G_n, H. This holds by the random oracle model applied to the
+hash-to-curve function.
+
+All group elements are serialized in compressed form (33 bytes on secp256k1).
+
+================================================================================
+PHASE 0 — GENERATOR SETUP  (one-time, public)
+================================================================================
+
+Both parties compute and verify the generators independently using the same
+hash-to-curve specification. No interaction required. The dimension n is
+agreed in advance as part of the protocol context string.
+
+    G_i  =  hash_to_curve( SHA256("PVCE_G_" || little_endian_32(i)) )
+    H    =  hash_to_curve( SHA256("PVCE_H") )
+
+These values are fixed for all subsequent protocol executions with the same n.
+
+================================================================================
+PHASE 1 — COMMITMENT  (Prover → Verifier)
+================================================================================
+
+P holds witness (c_1, ..., c_n) where each c_i ∈ Z_p, and chooses a
+uniform blinding scalar r ∈ Z_p.
+
+P computes the Pedersen vector commitment:
+
+    C  =  c_1·G_1  +  c_2·G_2  +  ...  +  c_n·G_n  +  r·H
+
+P sends C to V.
+
+OPTIONAL — Proof of Knowledge of Opening
+P may accompany C with a Schnorr-style proof that it knows a valid opening,
+without revealing (c_i, r). This is not required for the encryption to work
+but may be required by V before proceeding:
+
+  (a) P samples nonces  a_1, ..., a_n, b  uniformly from Z_p.
+  (b) P computes  A = sum_i( a_i · G_i ) + b · H
+  (c) Challenge:  e = SHA256( "PVCE_POK" || C || A )  interpreted as a scalar.
+  (d) Responses:  s_i = a_i + e·c_i mod p  for each i,  t = b + e·r mod p.
+  (e) P sends  (A, e, s_1, ..., s_n, t).
+
+Verification by V:
+    sum_i( s_i · G_i ) + t · H  =?=  A + e · C
+
+================================================================================
+PHASE 2 — ENCRYPTION AND BITCOIN PAYMENT  (Verifier)
+================================================================================
+
+STEP 2.1 — Ephemeral Key and Shared Secret
+------------------------------------------
+V samples a uniform ephemeral scalar q ∈ Z_p.
+
+V computes the shared secret as the scalar multiple of the commitment:
+
+    S  =  q · C
+
+S is a curve point. V will use S to derive the Bitcoin private key.
+
+STEP 2.2 — Bitcoin Private Key Derivation
+------------------------------------------
+From S, V derives the Bitcoin private key scalar m using a KDF:
+
+    m  =  HKDF-SHA256(
+              ikm  =  S.x_bytes || S.y_bytes,       -- 64 bytes, S in affine
+              salt =  "PVCE_salt",
+              info =  "PVCE_privkey"
+          )  mod p
+
+If m = 0, V must resample q (negligible probability).
+
+V computes the corresponding Bitcoin public key:
+
+    M  =  m · G
+
+STEP 2.3 — Bitcoin Payment on Signet
+--------------------------------------
+V constructs a Bitcoin transaction output paying amount A (in satoshis) to
+a Pay-to-Taproot (P2TR) output with internal key M and no script path
+(key-path-only spend, per BIP 341).
+
+    scriptPubKey  =  OP_1  <32-byte x-only pubkey of M>
+
+V broadcasts this transaction to the Bitcoin signet network and records:
+
+    txid    -- the transaction ID of the funding transaction
+    vout    -- the output index within that transaction
+    amount  -- the amount in satoshis
+
+V waits for the transaction to be confirmed before publishing the ciphertext
+(to prevent a race where the prover spends before confirmation, or V reverts).
+
+STEP 2.4 — Ciphertext Components
+----------------------------------
+V computes the ECDH ciphertext: one scalar multiple of q for each generator.
+
+    Q_i  =  q · G_i    for i = 1, ..., n
+    Q_H  =  q · H
+
+The ciphertext is  CT = ( Q_1, Q_2, ..., Q_n, Q_H ).
+
+These are (n+1) curve points, each 33 bytes compressed.
+
+STEP 2.5 — DLEQ Validity Proof
+--------------------------------
+V must prove that all components of CT share the same scalar q, i.e., that
+Q_i = q·G_i for all i, and Q_H = q·H — without revealing q.
+
+This is a multi-base discrete log equality proof (batched Schnorr):
+
+  (a) V samples a uniform nonce k ∈ Z_p.
+  (b) V computes commitment points:
+          R_i  =  k · G_i    for i = 1, ..., n
+          R_H  =  k · H
+  (c) Challenge (Fiat-Shamir over all components):
+          e  =  SHA256(
+                  "PVCE_DLEQ"
+                  || G_1 || ... || G_n || H
+                  || Q_1 || ... || Q_n || Q_H
+                  || R_1 || ... || R_n || R_H
+                )  mod p
+  (d) Response:
+          s  =  k  -  e · q  mod p
+
+V publishes the DLEQ proof:  π = ( e, s )
+
+Verification by P (or any party):
+  For each i = 1, ..., n:
+      s · G_i  +  e · Q_i  =?=  R_i  (recompute R_i from e, s, G_i, Q_i)
+  s · H  +  e · Q_H  =?=  R_H
+
+If all (n+1) checks pass, the ciphertext is well-formed with respect to a
+single consistent q.
+
+STEP 2.6 — Publication
+------------------------
+V publishes the following bundle (may be posted publicly or sent to P):
+
+    {
+      C,                       -- the commitment (may already be public)
+      CT = (Q_1,...,Q_n, Q_H), -- ciphertext components
+      π  = (e, s),             -- DLEQ validity proof
+      txid, vout, amount       -- locating the on-chain output
+    }
+
+================================================================================
+PHASE 3 — DECRYPTION AND SPENDING  (Prover)
+================================================================================
+
+STEP 3.1 — Verify Ciphertext Validity
+---------------------------------------
+P verifies π against CT using the verification equations from Step 2.5.
+If verification fails, P aborts: the ciphertext is malformed or dishonest.
+
+STEP 3.2 — Recover the Shared Secret
+---------------------------------------
+P uses the commitment opening (c_1, ..., c_n, r) to reconstruct S = q·C:
+
+    S  =  c_1 · Q_1  +  c_2 · Q_2  +  ...  +  c_n · Q_n  +  r · Q_H
+
+Correctness:
+    sum_i( c_i · Q_i ) + r · Q_H
+  = sum_i( c_i · q · G_i ) + r · q · H
+  = q · ( sum_i( c_i · G_i ) + r · H )
+  = q · C  =  S  ✓
+
+STEP 3.3 — Derive Private Key
+-------------------------------
+P applies the same KDF as V:
+
+    m  =  HKDF-SHA256(
+              ikm  =  S.x_bytes || S.y_bytes,
+              salt =  "PVCE_salt",
+              info =  "PVCE_privkey"
+          )  mod p
+
+P computes M = m·G and verifies that M matches the internal key of the
+P2TR output at (txid, vout). If it does not match, either V acted
+dishonestly (paid to a different key than the one derived from CT) or P
+has the wrong opening. P should abort.
+
+STEP 3.4 — Construct and Broadcast Spending Transaction
+---------------------------------------------------------
+P constructs a Bitcoin transaction spending the output (txid, vout):
+
+  Input:
+    - prevout:  txid:vout
+    - sequence: 0xFFFFFFFF (or as appropriate)
+    - witness:  [schnorr_signature]   -- key-path P2TR spend per BIP 341
+
+  Output(s):
+    - P's chosen destination(s), up to the input amount minus fees.
+
+Signing (BIP 341 key-path):
+  (a) Compute the tweaked private key per BIP 341 taproot key tweaking:
+          t         =  SHA256( "TapTweak" || M.x_bytes )  as scalar
+          m_tweaked =  m + t  mod p
+  (b) Compute the sighash per BIP 341 (SIGHASH_DEFAULT or explicit type).
+  (c) Produce a BIP 340 Schnorr signature:
+          sig  =  schnorr_sign( m_tweaked, sighash )
+  (d) Set witness = [ sig ]  (64 or 65 bytes depending on sighash type).
+
+P broadcasts the spending transaction to the Bitcoin signet network.
+
+================================================================================
+SECURITY PROPERTIES
+================================================================================
+
+CORRECTNESS
+  If P holds a valid opening of C, the shared secret S computed in Step 3.2
+  equals q·C, and so m derived in Step 3.3 equals m derived in Step 2.2.
+  Hence M = m·G matches the P2TR key, and P can always spend.
+
+SOUNDNESS (Binding)
+  The Pedersen vector commitment C is computationally binding under the
+  discrete logarithm assumption on secp256k1. A party without a valid
+  opening of C cannot compute q·C from CT without solving the ECDH problem
+  (i.e., computing q·C from {q·G_i} and C). This is hard under DDH.
+
+HIDING OF WITNESS (from V and third parties)
+  CT = {q·G_i, q·H} reveals nothing about the c_i or r to a party not
+  knowing q. This follows from the DDH assumption: q·G_i is
+  computationally indistinguishable from a random point.
+
+DLEQ PROOF SOUNDNESS
+  A malicious V who uses different q values for different components would
+  fail the DLEQ verification, and P aborts before attempting decryption.
+  Specifically: if Q_i = q_i·G_i with distinct q_i, no single (e, s) pair
+  can satisfy all (n+1) verification equations simultaneously (except with
+  negligible probability).
+
+KNOWN LIMITATION — V's payment honesty
+  The DLEQ proof establishes that CT encodes a consistent q. It does NOT
+  prove that V paid to the key M derived from that q. A dishonest V could
+  publish a valid CT but pay to a different address. The prover detects
+  this in Step 3.3 (the derived M will not match the on-chain output) but
+  only after V's transaction is already confirmed. If the protocol requires
+  V's payment honesty to be publicly verifiable before P invests effort,
+  additional measures are needed (e.g., a commitment from V to M alongside
+  the on-chain output, verifiable by P before decryption begins).
+
+================================================================================
+PARAMETER SUMMARY
+================================================================================
+
+Curve:            secp256k1
+n:                dimension of witness vector (agreed at setup)
+Ciphertext size:  (n+1) curve points  =  33(n+1) bytes
+DLEQ proof size:  2 scalars           =  64 bytes
+PoK proof size:   (n+2) scalars + 1 point  =  32(n+2) + 33 bytes
+KDF:              HKDF-SHA256 with fixed salt and info strings
+Bitcoin output:   P2TR key-path-only (BIP 341 / BIP 340)
+Network:          Bitcoin signet (for testing)
+
+================================================================================
+END OF PROTOCOL SPECIFICATION
+================================================================================
