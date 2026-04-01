@@ -25,6 +25,12 @@ This is a form of *witness encryption* — the ability to encrypt to an NP state
 
 See `pvce_protocol.txt` for the full specification and security discussion.
 
+### Known limitation — verifier payment honesty
+
+The DLEQ proof guarantees the ciphertext is well-formed (consistent q across all generators), but does not prove that the verifier actually paid to the key M derived from that q. A dishonest verifier could publish a valid ciphertext while paying to a different address. The prover detects this after decryption (the derived key won't match the on-chain output), but only after the fact.
+
+A plausible strategy for closing this gap: replace the HKDF key derivation with an algebraic derivation (e.g. m = S.x, the x-coordinate of the shared secret point), then use the secp256k1/secq256k1 2-cycle to prove correctness across curves. The x-coordinate of a secp256k1 point lives in F_p, which is natively the scalar field of secq256k1, so verifying the EC arithmetic on one curve is cheap inside a proof system on the other. A Bulletproofs-style inner product argument on each curve, composed recursively, could prove the full derivation chain — from the encrypted q through to the Bitcoin public key M — without ever expressing a hash function in a circuit. This keeps the construction on pure discrete-log assumptions.
+
 ## Usage
 
 ### Build
