@@ -14,8 +14,8 @@ use bitcoin::{
 };
 use clap::{Parser, Subcommand};
 use protocol::{
-    compute_generators, decrypt, derive_privkey, dleq_verify, encrypt, hex_to_point,
-    hex_to_scalar, pedersen_commit, point_to_hex, random_scalar, scalar_to_hex, DleqProof,
+    compute_generators, decrypt, derive_mask, dleq_verify, encrypt, hex_to_point, hex_to_scalar,
+    pedersen_commit, point_to_hex, random_scalar, scalar_to_hex, DleqProof,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -68,6 +68,8 @@ struct State {
     ciphertext: Vec<String>,
     dleq_e: String,
     dleq_s: String,
+    /// Encrypted private key: m_enc = m + KDF(S) mod p
+    m_enc: String,
     internal_pubkey_hex: String,
     address: String,
 }
@@ -101,8 +103,10 @@ fn cmd_setup(n: usize, output_path: &str) -> Result<()> {
     // -- Verifier: encrypt to commitment --
     let enc = encrypt(&commitment, &gs, &h);
 
-    // -- Derive Bitcoin private key from shared secret --
-    let m = derive_privkey(&enc.shared_secret)?;
+    // -- Verifier: pre-choose Bitcoin private key, encrypt with KDF mask --
+    let m = random_scalar();
+    let mask = derive_mask(&enc.shared_secret)?;
+    let m_enc = m + mask;
     let m_bytes: [u8; 32] = m.to_bytes().into();
 
     // -- Compute P2TR address (key-path only, no script tree) --
@@ -125,6 +129,7 @@ fn cmd_setup(n: usize, output_path: &str) -> Result<()> {
         ciphertext: enc.ciphertext.iter().map(point_to_hex).collect(),
         dleq_e: scalar_to_hex(&enc.dleq_proof.e),
         dleq_s: scalar_to_hex(&enc.dleq_proof.s),
+        m_enc: scalar_to_hex(&m_enc),
         internal_pubkey_hex: hex::encode(xonly.serialize()),
         address: address.to_string(),
     };
@@ -174,8 +179,10 @@ fn cmd_recover(state_path: &str, txid_hex: &str, vout: u32, amount: u64, fee: u6
     // -- Step 3.2: Recover shared secret --
     let shared_secret = decrypt(&witness, &blinding, &ciphertext);
 
-    // -- Step 3.3: Derive private key --
-    let m = derive_privkey(&shared_secret)?;
+    // -- Step 3.3: Recover private key via m = m_enc - mask --
+    let mask = derive_mask(&shared_secret)?;
+    let m_enc = hex_to_scalar(&state.m_enc)?;
+    let m = m_enc - mask;
     let m_bytes: [u8; 32] = m.to_bytes().into();
 
     let secp = Secp256k1::new();

@@ -6,7 +6,7 @@
 
 PVCE is a two-party protocol that locks Bitcoin funds to a Pedersen vector commitment, such that only the party who knows the commitment opening (the witness vector and blinding factor) can recover the private key and spend the funds.
 
-The core idea: the Verifier encrypts a Bitcoin private key to a Pedersen commitment using an ECDH-like construction over the commitment's generators. A DLEQ (Discrete Log Equality) proof guarantees the encryption is well-formed. The Prover, knowing the witness that opens the commitment, can reconstruct the shared secret, derive the same private key, and spend from the resulting Pay-to-Taproot address.
+The core idea: the Verifier chooses a Bitcoin private key and encrypts it to a Pedersen commitment using an ECDH-like construction over the commitment's generators. The shared secret derived from the commitment serves as a one-time pad mask; the encrypted scalar is published alongside a DLEQ (Discrete Log Equality) proof guaranteeing the encryption is well-formed. The Prover, knowing the witness that opens the commitment, can reconstruct the shared secret, unmask the private key, and spend from the resulting Pay-to-Taproot address.
 
 This is a form of *witness encryption* — the ability to encrypt to an NP statement such that only a party holding a valid witness can decrypt. Here the NP statement is "I know an opening of this Pedersen vector commitment," which is a natural building block for more complex constructions (range proofs, set membership, credential systems, etc.).
 
@@ -23,7 +23,7 @@ This is a form of *witness encryption* — the ability to encrypt to an NP state
 - **Hiding**: the ciphertext reveals nothing about the witness (under DDH).
 - **DLEQ soundness**: a malicious verifier using inconsistent encryption is detected and rejected.
 
-See `pvce_protocol.txt` for the full specification and security discussion.
+See `pvce_protocol.md` for the full specification and security discussion.
 
 ### Known limitation — verifier payment honesty
 
@@ -49,7 +49,7 @@ This simulates both parties locally:
 - Generates a random witness vector of dimension `n` and a blinding factor (Prover).
 - Computes the Pedersen vector commitment.
 - Encrypts to the commitment and produces a DLEQ validity proof (Verifier).
-- Derives the Bitcoin private key and corresponding P2TR address.
+- Verifier pre-chooses a Bitcoin private key, encrypts it with the shared-secret mask, and outputs the corresponding P2TR address.
 
 The signet address is printed to stdout. All protocol state (witness, ciphertext, proof, keys) is saved to the JSON file (default: `pvce_state.json`).
 
@@ -64,7 +64,7 @@ cargo run --release -- recover -s state.json --txid <funding_txid> --vout <outpu
 This runs the Prover side:
 - Verifies the DLEQ proof (ciphertext is well-formed).
 - Recovers the shared secret using the witness opening.
-- Derives the Bitcoin private key and verifies it matches the funded address.
+- Unmasks the encrypted private key and verifies it matches the funded address.
 - Builds and signs a spending transaction (P2TR key-path, BIP 340/341).
 - Outputs the raw transaction hex to stdout.
 

@@ -53,20 +53,6 @@ $$C = c_1 \cdot G_1 + c_2 \cdot G_2 + \cdots + c_n \cdot G_n + r \cdot H$$
 
 $P$ sends $C$ to $V$.
 
-### Optional — Proof of Knowledge of Opening
-
-$P$ may accompany $C$ with a Schnorr-style proof that it knows a valid opening, without revealing $(c_i, r)$. This is not required for the encryption to work but may be required by $V$ before proceeding.
-
-1. $P$ samples nonces $a_1, \ldots, a_n, b$ uniformly from $\mathbb{Z}_p$.
-2. $P$ computes $A = \sum_i a_i \cdot G_i + b \cdot H$
-3. **Challenge:** $e = \textrm{SHA256}(\texttt{"PVCE\\_POK"} \Vert C \Vert A)$, interpreted as a scalar.
-4. **Responses:** $s_i = a_i + e \cdot c_i \bmod p$ for each $i$, and $t = b + e \cdot r \bmod p$.
-5. $P$ sends $(A,\; e,\; s_1, \ldots, s_n,\; t)$.
-
-**Verification by V:**
-
-$$\sum_i s_i \cdot G_i + t \cdot H \stackrel{?}{=} A + e \cdot C$$
-
 ---
 
 ## Phase 2 — Encryption and Bitcoin Payment (Verifier)
@@ -79,17 +65,21 @@ $V$ computes the **shared secret** as the scalar multiple of the commitment:
 
 $$S = q \cdot C$$
 
-$S$ is a curve point. $V$ will use $S$ to derive the Bitcoin private key.
+$S$ is a curve point. $V$ will use $S$ to encrypt a pre-chosen Bitcoin private key.
 
-### Step 2.2 — Bitcoin Private Key Derivation
+### Step 2.2 — Bitcoin Private Key and Encrypted Scalar
 
-From $S$, $V$ derives the Bitcoin private key scalar $m$ using a KDF:
+$V$ chooses a uniform random Bitcoin private key $m \in \mathbb{Z}_p$ (this may be done before receiving $C$).
 
-$$m = \textrm{HKDF-SHA256}(\ \textrm{ikm} = S_x \Vert S_y\,,\ \textrm{salt} = \texttt{"PVCE\\_salt"}\,,\ \textrm{info} = \texttt{"PVCE\\_privkey"}\ ) \bmod p$$
+$V$ derives an encryption mask from $S$:
+
+$$\mu = \textrm{HKDF-SHA256}(\ \textrm{ikm} = S_x \Vert S_y\,,\ \textrm{salt} = \texttt{"PVCE\\_salt"}\,,\ \textrm{info} = \texttt{"PVCE\\_privkey"}\ ) \bmod p$$
 
 where $S_x, S_y$ are the 32-byte big-endian affine coordinates of $S$ (64 bytes total).
 
-If $m = 0$, $V$ must resample $q$ (negligible probability).
+$V$ computes the **encrypted private key**:
+
+$$m_{\mathrm{enc}} = m + \mu \bmod p$$
 
 $V$ computes the corresponding Bitcoin public key:
 
@@ -165,6 +155,7 @@ $V$ publishes the following bundle (may be posted publicly or sent to $P$):
 | $C$ | The commitment (may already be public) |
 | $\mathrm{CT} = (Q_1, \ldots, Q_n, Q_H)$ | Ciphertext components |
 | $\pi = (e, s)$ | DLEQ validity proof |
+| $m_{\mathrm{enc}}$ | Encrypted private key scalar |
 | `txid`, `vout`, `amount` | Locating the on-chain output |
 
 ---
@@ -185,11 +176,15 @@ $$S = c_1 \cdot Q_1 + c_2 \cdot Q_2 + \cdots + c_n \cdot Q_n + r \cdot Q_H$$
 
 $$\sum_i c_i \cdot Q_i + r \cdot Q_H = \sum_i c_i \cdot q \cdot G_i + r \cdot q \cdot H = q \cdot \left(\sum_i c_i \cdot G_i + r \cdot H\right) = q \cdot C = S \quad \checkmark$$
 
-### Step 3.3 — Derive Private Key
+### Step 3.3 — Recover Private Key
 
-$P$ applies the same KDF as $V$:
+$P$ derives the same encryption mask as $V$:
 
-$$m = \textrm{HKDF-SHA256}(\ \textrm{ikm} = S_x \Vert S_y\,,\ \textrm{salt} = \texttt{"PVCE\\_salt"}\,,\ \textrm{info} = \texttt{"PVCE\\_privkey"}\ ) \bmod p$$
+$$\mu = \textrm{HKDF-SHA256}(\ \textrm{ikm} = S_x \Vert S_y\,,\ \textrm{salt} = \texttt{"PVCE\\_salt"}\,,\ \textrm{info} = \texttt{"PVCE\\_privkey"}\ ) \bmod p$$
+
+$P$ recovers the private key from the encrypted scalar:
+
+$$m = m_{\mathrm{enc}} - \mu \bmod p$$
 
 $P$ computes $M = m \cdot G$ and verifies that $M$ matches the internal key of the P2TR output at (`txid`, `vout`). If it does not match, either $V$ acted dishonestly (paid to a different key than the one derived from CT) or $P$ has the wrong opening. $P$ should abort.
 
@@ -229,7 +224,7 @@ $P$ broadcasts the spending transaction to the Bitcoin signet network.
 
 ### Correctness
 
-If $P$ holds a valid opening of $C$, the shared secret $S$ computed in Step 3.2 equals $q \cdot C$, and so $m$ derived in Step 3.3 equals $m$ derived in Step 2.2. Hence $M = m \cdot G$ matches the P2TR key, and $P$ can always spend.
+If $P$ holds a valid opening of $C$, the shared secret $S$ computed in Step 3.2 equals $q \cdot C$, and so the mask $\mu$ derived in Step 3.3 equals the mask $\mu$ derived in Step 2.2. Hence $m = m_{\mathrm{enc}} - \mu$ recovers $V$'s pre-chosen private key, $M = m \cdot G$ matches the P2TR key, and $P$ can always spend.
 
 ### Soundness (Binding)
 
@@ -255,9 +250,8 @@ The DLEQ proof establishes that CT encodes a consistent $q$. It does **not** pro
 |-----------|-------|
 | Curve | secp256k1 |
 | $n$ | Dimension of witness vector (agreed at setup) |
-| Ciphertext size | $(n+1)$ curve points = $33(n+1)$ bytes |
+| Ciphertext size | $(n+1)$ curve points + 1 scalar = $33(n+1) + 32$ bytes |
 | DLEQ proof size | 2 scalars = 64 bytes |
-| PoK proof size | $(n+2)$ scalars + 1 point = $32(n+2) + 33$ bytes |
 | KDF | HKDF-SHA256 with fixed salt and info strings |
 | Bitcoin output | P2TR key-path-only (BIP 341 / BIP 340) |
 | Network | Bitcoin signet (for testing) |

@@ -255,8 +255,9 @@ pub fn decrypt(
 
 // ---- Key derivation ----
 
-/// Derive the Bitcoin private key scalar from shared secret S via HKDF-SHA256.
-pub fn derive_privkey(shared_secret: &ProjectivePoint) -> Result<Scalar> {
+/// Derive the encryption mask scalar from shared secret S via HKDF-SHA256.
+/// This is used as a one-time pad: m_enc = m + mask, m = m_enc - mask.
+pub fn derive_mask(shared_secret: &ProjectivePoint) -> Result<Scalar> {
     let affine = shared_secret.to_affine();
     let encoded = affine.to_encoded_point(false); // uncompressed: 04 || x || y
     let x = encoded
@@ -275,10 +276,5 @@ pub fn derive_privkey(shared_secret: &ProjectivePoint) -> Result<Scalar> {
     hk.expand(b"PVCE_privkey", &mut okm)
         .map_err(|e| anyhow::anyhow!("HKDF expand error: {}", e))?;
 
-    let m = scalar_from_hash(&okm);
-    ensure!(
-        bool::from(!m.is_zero()),
-        "derived key is zero — resample needed"
-    );
-    Ok(m)
+    Ok(scalar_from_hash(&okm))
 }
