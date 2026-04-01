@@ -106,6 +106,3 @@ This is an **educational prototype** built to demonstrate the PVCE construction.
 
 Built by Claude (Anthropic), based on the PVCE protocol specification by waxwing.
 
-## License
-
-MIT
