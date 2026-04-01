@@ -21,9 +21,9 @@ A two-party protocol. The **Prover** holds a secret witness vector and its commi
 
 **Generators for Pedersen commitment** — independent of $G$, generated once via deterministic hash-to-curve from fixed public strings:
 
-$$G_i = \text{hash\_to\_curve}(\texttt{"PVCE\_G\_"} \| i) \quad \text{for } i = 1, \ldots, n$$
+$$G_i = \textrm{HashToCurve}(\texttt{"PVCE\\_G\\_"} \Vert i) \quad \text{for } i = 1, \ldots, n$$
 
-$$H = \text{hash\_to\_curve}(\texttt{"PVCE\_H"})$$
+$$H = \textrm{HashToCurve}(\texttt{"PVCE\\_H"})$$
 
 **Independence assumption:** no party knows any discrete-log relation among $G, G_1, \ldots, G_n, H$. This holds by the random oracle model applied to the hash-to-curve function.
 
@@ -35,9 +35,9 @@ All group elements are serialized in **compressed form** (33 bytes on secp256k1)
 
 Both parties compute and verify the generators independently using the same hash-to-curve specification. No interaction required. The dimension $n$ is agreed in advance as part of the protocol context string.
 
-$$G_i = \text{hash\_to\_curve}\big(\text{SHA256}(\texttt{"PVCE\_G\_"} \| \text{little\_endian\_32}(i))\big)$$
+$$G_i = \textrm{HashToCurve}\bigl(\textrm{SHA256}(\texttt{"PVCE\\_G\\_"} \Vert \textrm{LE32}(i))\bigr)$$
 
-$$H = \text{hash\_to\_curve}\big(\text{SHA256}(\texttt{"PVCE\_H"})\big)$$
+$$H = \textrm{HashToCurve}\bigl(\textrm{SHA256}(\texttt{"PVCE\\_H"})\bigr)$$
 
 These values are fixed for all subsequent protocol executions with the same $n$.
 
@@ -59,8 +59,8 @@ $P$ may accompany $C$ with a Schnorr-style proof that it knows a valid opening, 
 
 1. $P$ samples nonces $a_1, \ldots, a_n, b$ uniformly from $\mathbb{Z}_p$.
 2. $P$ computes $A = \sum_i a_i \cdot G_i + b \cdot H$
-3. **Challenge:** $e = \text{SHA256}(\texttt{"PVCE\_POK"} \| C \| A)$, interpreted as a scalar.
-4. **Responses:** $s_i = a_i + e \cdot c_i \mod p$ for each $i$, and $t = b + e \cdot r \mod p$.
+3. **Challenge:** $e = \textrm{SHA256}(\texttt{"PVCE\\_POK"} \Vert C \Vert A)$, interpreted as a scalar.
+4. **Responses:** $s_i = a_i + e \cdot c_i \bmod p$ for each $i$, and $t = b + e \cdot r \bmod p$.
 5. $P$ sends $(A,\; e,\; s_1, \ldots, s_n,\; t)$.
 
 **Verification by V:**
@@ -85,7 +85,9 @@ $S$ is a curve point. $V$ will use $S$ to derive the Bitcoin private key.
 
 From $S$, $V$ derives the Bitcoin private key scalar $m$ using a KDF:
 
-$$m = \text{HKDF-SHA256}\!\left(\begin{aligned} \text{ikm} &= S.x\_\text{bytes} \| S.y\_\text{bytes} \quad \text{(64 bytes, } S \text{ in affine)} \\ \text{salt} &= \texttt{"PVCE\_salt"} \\ \text{info} &= \texttt{"PVCE\_privkey"} \end{aligned}\right) \mod p$$
+$$m = \textrm{HKDF-SHA256}(\ \textrm{ikm} = S_x \Vert S_y\,,\ \textrm{salt} = \texttt{"PVCE\\_salt"}\,,\ \textrm{info} = \texttt{"PVCE\\_privkey"}\ ) \bmod p$$
+
+where $S_x, S_y$ are the 32-byte big-endian affine coordinates of $S$ (64 bytes total).
 
 If $m = 0$, $V$ must resample $q$ (negligible probability).
 
@@ -119,7 +121,7 @@ $$Q_i = q \cdot G_i \quad \text{for } i = 1, \ldots, n$$
 
 $$Q_H = q \cdot H$$
 
-The ciphertext is $\text{CT} = (Q_1, Q_2, \ldots, Q_n, Q_H)$.
+The ciphertext is $\mathrm{CT} = (Q_1, Q_2, \ldots, Q_n, Q_H)$.
 
 These are $(n+1)$ curve points, each 33 bytes compressed.
 
@@ -132,25 +134,23 @@ This is a **multi-base discrete log equality proof** (batched Schnorr):
 1. $V$ samples a uniform nonce $k \in \mathbb{Z}_p$.
 2. $V$ computes commitment points:
 
-$$R_i = k \cdot G_i \quad \text{for } i = 1, \ldots, n$$
-
-$$R_H = k \cdot H$$
+$$R_i = k \cdot G_i \quad \text{for } i = 1, \ldots, n \qquad R_H = k \cdot H$$
 
 3. **Challenge** (Fiat-Shamir over all components):
 
-$$e = \text{SHA256}\!\left(\texttt{"PVCE\_DLEQ"} \| G_1 \| \cdots \| G_n \| H \| Q_1 \| \cdots \| Q_n \| Q_H \| R_1 \| \cdots \| R_n \| R_H\right) \mod p$$
+$$e = \textrm{SHA256}\bigl(\texttt{"PVCE\\_DLEQ"} \Vert G_1 \Vert \cdots \Vert G_n \Vert H \Vert Q_1 \Vert \cdots \Vert Q_n \Vert Q_H \Vert R_1 \Vert \cdots \Vert R_n \Vert R_H\bigr) \bmod p$$
 
 4. **Response:**
 
-$$s = k - e \cdot q \mod p$$
+$$s = k - e \cdot q \bmod p$$
 
 $V$ publishes the DLEQ proof: $\pi = (e,\; s)$
 
 **Verification by P (or any party):**
 
-For each $i = 1, \ldots, n$:
+For each $i = 1, \ldots, n$ recompute $R_i$ and $R_H$:
 
-$$s \cdot G_i + e \cdot Q_i \stackrel{?}{=} R_i \quad \text{(recompute } R_i \text{ from } e, s, G_i, Q_i\text{)}$$
+$$s \cdot G_i + e \cdot Q_i \stackrel{?}{=} R_i$$
 
 $$s \cdot H + e \cdot Q_H \stackrel{?}{=} R_H$$
 
@@ -163,9 +163,9 @@ $V$ publishes the following bundle (may be posted publicly or sent to $P$):
 | Component | Description |
 |-----------|-------------|
 | $C$ | The commitment (may already be public) |
-| $\text{CT} = (Q_1, \ldots, Q_n, Q_H)$ | Ciphertext components |
+| $\mathrm{CT} = (Q_1, \ldots, Q_n, Q_H)$ | Ciphertext components |
 | $\pi = (e, s)$ | DLEQ validity proof |
-| `txid, vout, amount` | Locating the on-chain output |
+| `txid`, `vout`, `amount` | Locating the on-chain output |
 
 ---
 
@@ -189,7 +189,7 @@ $$\sum_i c_i \cdot Q_i + r \cdot Q_H = \sum_i c_i \cdot q \cdot G_i + r \cdot q 
 
 $P$ applies the same KDF as $V$:
 
-$$m = \text{HKDF-SHA256}\!\left(\begin{aligned} \text{ikm} &= S.x\_\text{bytes} \| S.y\_\text{bytes} \\ \text{salt} &= \texttt{"PVCE\_salt"} \\ \text{info} &= \texttt{"PVCE\_privkey"} \end{aligned}\right) \mod p$$
+$$m = \textrm{HKDF-SHA256}(\ \textrm{ikm} = S_x \Vert S_y\,,\ \textrm{salt} = \texttt{"PVCE\\_salt"}\,,\ \textrm{info} = \texttt{"PVCE\\_privkey"}\ ) \bmod p$$
 
 $P$ computes $M = m \cdot G$ and verifies that $M$ matches the internal key of the P2TR output at (`txid`, `vout`). If it does not match, either $V$ acted dishonestly (paid to a different key than the one derived from CT) or $P$ has the wrong opening. $P$ should abort.
 
@@ -209,17 +209,17 @@ $P$ constructs a Bitcoin transaction spending the output (`txid`, `vout`):
 
 1. Compute the tweaked private key per BIP 341 taproot key tweaking:
 
-$$t = \text{SHA256}(\texttt{"TapTweak"} \| M.x\_\text{bytes}) \quad \text{as scalar}$$
+$$t = \textrm{SHA256}(\texttt{"TapTweak"} \Vert M_x) \quad \text{(as scalar)}$$
 
-$$m_{\text{tweaked}} = m + t \mod p$$
+$$m_{\mathrm{tweaked}} = m + t \bmod p$$
 
 2. Compute the sighash per BIP 341 (`SIGHASH_DEFAULT` or explicit type).
 
 3. Produce a BIP 340 Schnorr signature:
 
-$$\text{sig} = \text{schnorr\_sign}(m_{\text{tweaked}},\; \text{sighash})$$
+$$\sigma = \textrm{SchnorrSign}(m_{\mathrm{tweaked}},\; \textrm{sighash})$$
 
-4. Set `witness = [sig]` (64 or 65 bytes depending on sighash type).
+4. Set `witness =` $[\sigma]$ (64 or 65 bytes depending on sighash type).
 
 $P$ broadcasts the spending transaction to the Bitcoin signet network.
 
@@ -233,11 +233,11 @@ If $P$ holds a valid opening of $C$, the shared secret $S$ computed in Step 3.2 
 
 ### Soundness (Binding)
 
-The Pedersen vector commitment $C$ is computationally binding under the discrete logarithm assumption on secp256k1. A party without a valid opening of $C$ cannot compute $q \cdot C$ from CT without solving the ECDH problem (i.e., computing $q \cdot C$ from $\{q \cdot G_i\}$ and $C$). This is hard under DDH.
+The Pedersen vector commitment $C$ is computationally binding under the discrete logarithm assumption on secp256k1. A party without a valid opening of $C$ cannot compute $q \cdot C$ from CT without solving the ECDH problem (i.e., computing $q \cdot C$ from $\lbrace q \cdot G_i \rbrace$ and $C$). This is hard under DDH.
 
 ### Hiding of Witness (from V and third parties)
 
-$\text{CT} = \{q \cdot G_i,\; q \cdot H\}$ reveals nothing about the $c_i$ or $r$ to a party not knowing $q$. This follows from the DDH assumption: $q \cdot G_i$ is computationally indistinguishable from a random point.
+$\mathrm{CT} = \lbrace q \cdot G_i,\; q \cdot H \rbrace$ reveals nothing about the $c_i$ or $r$ to a party not knowing $q$. This follows from the DDH assumption: $q \cdot G_i$ is computationally indistinguishable from a random point.
 
 ### DLEQ Proof Soundness
 
